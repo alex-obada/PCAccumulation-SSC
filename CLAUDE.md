@@ -345,36 +345,56 @@ optimization, so the contribution of each one can be shown exactly.
 - torchsparse is only used for `sparse_quantize` (`libs/dataset.py`, `models/cluster.py`).
 - Not installed: tensorflow / waymo-open-dataset / nuscenes-devkit (only needed by
   `dataset_toolbox/` for raw data preprocessing).
-- Needed for the export utility: `onnx`, `onnxruntime`.
+- Needed for the export utility: `onnx==1.17.0`, `onnxruntime==1.20.1` (in `setup_env.sh`).
 - `venv_pcaccumulation/`, `.deps/`, `checkpoints/` and `*.zip` are git-ignored. Recreate the venv
   with `setup_env.sh` on a new machine, don't copy it: its activate script contains absolute paths.
 
 ## Running the Python reference (details in `RUNNING.md`)
 
-- `python dummy-test.py`: loads `checkpoints/waymo.pth` onto the GPU and builds a torchsparse tensor.
-- `python synthetic_benchmark.py`: synthetic 5-sweep scenes through the real preprocessing (crop,
-  ground removal, numba 4D voxelisation, `collate_fn`) and the pretrained model in `test` mode.
-  Reports per-stage latency, peak GPU memory, output tensors and the ego-motion error against the
-  synthetic ground truth. Useful as a quick smoke/regression test; real frames are the main data.
-- Regression workflow: `--deterministic --save-ref ref.pt` once on the original model, then
-  `--deterministic --compare ref.pt` after each change.
+- `python check_env.py [--no-frame]`: checks torch/CUDA, torch_scatter, torchsparse, numba,
+  onnx/onnxruntime, open3d, the model + checkpoint, chamfer_distance JIT, and one real forward pass
+  (via `common/reference.py`). Exit code 1 on failure. Replaced `dummy-test.py`.
+- `python benchmarks/bench_v0.py`: speed benchmark of the original model on the selected real
+  frames, batch 1, `test` mode. Times each stage of the module table (`preprocess`, `voxelize`,
+  `h2d`, `pillar_enc`, `backbone`, `ego_motion`, `motion_seg`, `cluster`, plus `tubenet` outside
+  the scope) through the optional `MotionNet.timer` hook (no-op when `None`). Writes
+  `benchmarks/results/<variant>_<precision>_<device>.csv` (+ `_meta.json`) with columns
+  `variant,device,precision,frame,pass,stage,ms,n_points,n_pillars,n_fg_points`. **The C++
+  `benchmark.cpp` must write the same schema and stage names**, so `benchmarks/summarize.py`
+  (numpy only) compares any runs: median ms per stage, e2e, FPS, speedup vs V0.
+- `e2e` = sum of synced stages `preprocess`..`cluster`; `e2e_nosync` = a second run without
+  per-stage syncs. Benchmark focus is speed; power and memory are not measured.
+- Regression workflow: `--deterministic --passes 1 --save-outputs benchmarks/results/V0_outputs`
+  once on the original model, then `--deterministic --passes 1 --compare <dir>` after each change.
+  Per-frame `.bin` files (format in `benchmarks/binio.py`: int32 dtype code, ndim, dims, data):
+  `points`, `poses [5,4,4]`, `mos_label [N]`, `inst_label [N]`, `time_indice [N]` (int32 sweep 0..4).
+  The C++ program must write the same per-frame files (dir `<seq>_<frame>`).
+- `python benchmarks/viewer.py`: Open3D window, per frame: segmented point cloud (static/moving,
+  object ID, sweep, disagreement between two runs) + per-stage and e2e timing from the CSVs. Reads
+  only outputs dirs and CSVs, so Python and C++ runs are viewed/compared side by side.
+  `--screenshot x.png` renders one frame and exits.
+- `bench_v0.py --view [--view-pause s]`: live window (`benchmarks/live_view.py`, separate process,
+  reuses `viewer.py` charts/colors) with input sweeps, output segmentation and statistics while the
+  benchmark runs; Pause/Step from the window. Timings under `--view` are indicative only.
 - Always use `--deterministic` for comparisons. Without it, fp32 runs differ slightly from run to
-  run, and occasionally a point changes instance cluster, which changes the shapes of
-  `sub_rec_est`/`inst_labels_adjusted`.
+  run, and occasionally a point changes instance cluster.
 - In `train`/`val` mode the forward pass uses ground-truth labels. Always run in **`test` mode**,
   which is the deployment path.
 
-## Baseline numbers (RTX 4060 Laptop, fp32, batch 1, synthetic 40k pts/sweep)
+## V0 baseline (RTX 4060 Laptop, TF32 convs, batch 1, 273 real frames × 3 passes, 2026-11-15)
 
-- ~54k points / ~9.4k 4D pillars after preprocessing.
-- Model forward: **~160–190 ms**. Preprocessing on the CPU: 5–30 ms. Peak GPU memory: ~660 MB.
-- Ego-motion translation error on synthetic scenes: ~0.05–0.09 m. If it's suddenly much larger,
-  something broke.
-- `--deterministic` noise floor: ~1e-4 relative, labels identical.
-- Synthetic scenes need non-uniform structure along the driving direction (segmented facades,
-  poles, trees). Uniform walls make forward translation unobservable, and the ego-motion error
-  jumps to ~1.5 m.
-- The V0 baseline on the selected real frames is still to be measured (Phase 0 step 2).
+- Inputs after preprocessing (median, min–max): 357k points (26k–608k), 17.9k 4D pillars
+  (3.2k–43k), 81k foreground points sent to STPN (0–348k). Latency scales with these.
+- Median ms per stage: preprocess 6.5, voxelize 8.1, h2d 2.0, pillar_enc 21.5, backbone 36.1,
+  ego_motion 7.4, motion_seg 31.6, cluster 25.9 (tubenet 14.8, outside the scope).
+- **e2e median 143.9 ms, p90 189.7 ms, 6.75 FPS** (min 63 ms, max 375 ms). No-sync e2e is the
+  same (143.5 ms), so per-stage syncs cost almost nothing.
+- Ego-motion translation error vs GT: ~0.03 m. If it's suddenly much larger, something broke.
+- `--deterministic` noise floor: identical labels, pose diff ~0.002 cm.
+- Results (git-ignored): the raw TF32 CSV of this baseline was overwritten by later runs (the numbers
+  above are what remains). `benchmarks/results/V0_determ/` holds an fp32 `--deterministic` run
+  (3 passes, 2026-11-23, CSV + meta) and `V0_outputs`, the reference outputs saved 2026-11-15
+  (probably without `--deterministic`: ~99.998 % label agreement with a deterministic rerun).
 
 ## Known issues / porting notes
 
@@ -387,14 +407,43 @@ optimization, so the contribution of each one can be shown exactly.
   with `torch.randperm` (non-deterministic across implementations).
 - Instance clustering + TubeNet is data-dependent and hard to export to TensorRT (hence clustering
   in CUDA, TubeNet optional).
+- **Warp quirk:** `MotionNet.warp_feats` stacks `[bev_feats[T-1], warp(frames 1..T-1)]`. The
+  un-warped slot is frame 4, not the anchor frame 0, because of a leaked loop variable. The checkpoint
+  was trained like that; the `stpn` export reproduces it, and C++ must not "fix" it.
+- **PFN outputs are not post-ReLU** (ResNet block = shortcut + dx): about 50-70 % of the `pfn_a/b/c`
+  outputs are negative. The scatter-max in `pillar_ops.cu` must use a sign-aware float `atomicMax`
+  (int compare for x >= 0, reversed unsigned compare for x < 0), not the plain bitwise trick.
+- `torch.logsumexp` exports as `ReduceLogSumExp`, which TensorRT evaluates without max subtraction;
+  `ego_ot` uses an explicit max-subtracted form instead.
+
+## ONNX export (`export/`)
+
+- `common/reference.py` is shared by `benchmarks/bench_v0.py` and `export/export_onnx.py`: config
+  (`build_config`), checkpoint loading (`load_model`), frame list / `.npz` loading, and the V0
+  preprocessing (`crop_and_remove_ground`, `voxelize_and_collate`, `to_device`, `prepare_batch`).
+  The export script does not import from `benchmarks/`.
+- `bash export/export_models.sh [--frame i]` runs `export/export_onnx.py`: one original forward pass
+  on a real selected frame (hooks capture the inputs and outputs of each part), exports
+  `pfn_a/b/c`, `backbone`, `ego_ot`, `stpn` to `pcacc_cpp/models/*.onnx` (opset 17), then checks
+  wrapper vs original (GPU) and onnxruntime vs wrapper (CPU). The I/O names and shapes are in the
+  module docstring. Exit code 1 if a check fails.
+- Real I/O shapes differ slightly from the table in section 5: `pfn_a` is `[N, 9] -> [N, 32]`,
+  `pfn_b`/`pfn_c` are `[N, 64] -> [N, 32]` (input = concat of the net and its pillar max); `backbone`
+  input is `[5, 32, 288, 288]` and `geo_feats` has 64 channels.
+- Verified results (3 frames): wrapper vs original exact (0) except `ego_ot` (~1e-7 rel, from the
+  logsumexp rewrite); onnxruntime vs original <= 6e-5 rel; fb/mos argmax 100 % identical; poses
+  within 0.003 cm.
 
 ## Code changes made vs. upstream
 
 - `libs/trainer.py`, `libs/tester.py`: `c_loader_iter.next()` → `next(c_loader_iter)`.
 - `libs/tester.py`, `toolbox/sf_eval_utils.py`, `toolbox/cluster_eval.py`: `np.bool`/`np.float`
   → builtins (removed in numpy 1.24+).
-- Added: `setup_env.sh`, `INSTALL.md`, `RUNNING.md`, `dummy-test.py`, `synthetic_benchmark.py`,
+- `models/motionnet.py`: optional `self.timer` stage hooks (`_mark`), no effect on outputs.
+- Added: `setup_env.sh`, `INSTALL.md`, `RUNNING.md`, `check_env.py`, `common/reference.py`, `benchmarks/`
+  (`bench_v0.py`, `summarize.py`, `binio.py`, `viewer.py`, `live_view.py`), `export/` (`export_onnx.py`, `export_models.sh`),
   and `.gitignore` entries.
+- Removed `synthetic_benchmark.py`: the selected real frames replace the synthetic scenes.
 
 ## Git
 

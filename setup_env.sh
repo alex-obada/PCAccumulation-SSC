@@ -50,7 +50,8 @@ PIP="$REPO/$VENV/bin/pip"
 
 # 4. Python dependencies used by main.py / libs / models / toolbox
 "$PIP" install "numpy<2" scipy scikit-learn pandas numba tqdm pyyaml tensorboardX \
-  filterpy nestargs ipython open3d termcolor pyquaternion matplotlib
+  filterpy nestargs ipython open3d termcolor pyquaternion matplotlib \
+  "onnx==1.17.0" "onnxruntime==1.20.1"
 
 # 5. Build env vars, persisted in the venv's activate script (needed again later, because the
 #    chamfer_distance CUDA extension is JIT-compiled the first time it is imported).
@@ -74,5 +75,5 @@ MAX_JOBS="${MAX_JOBS:-4}" pip install --no-build-isolation \
   git+https://github.com/mit-han-lab/torchsparse.git@v1.4.0
 
 # 7. Smoke test
-python dummy-test.py
+python check_env.py --no-frame
 echo ">> Done. Activate with: source $VENV/bin/activate"
