@@ -91,7 +91,7 @@ python benchmarks/bench_v0.py --deterministic --passes 1 --save-outputs benchmar
 
 Per frame, this writes `points.bin` (input after preprocessing), `poses.bin` `[5,4,4]`,
 `mos_label.bin` `[N]`, `inst_label.bin` `[N]` and `time_indice.bin` `[N]` (int32 sweep index
-0..4). The format is in `benchmarks/binio.py` (int32 dtype code, int32 ndim, int32 dims, then the
+0..4). The format is in `common/binio.py` (int32 dtype code, int32 ndim, int32 dims, then the
 data); the C++ program writes the same files.
 
 After a change, compare against them:

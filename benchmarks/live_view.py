@@ -102,7 +102,7 @@ def frame_message(*, fid, pass_idx, passes, frame_idx, n_frames, stages, sizes, 
 
 # ----------------------------------------------------------------------------- window side
 def _window_main(key, frame_ids, q, tq, ready, paused, step):
-    import open3d.visualization.gui as gui
+    import open3d.visualization.gui as gui  # pyright: ignore[reportMissingImports]  (compiled module, no stubs)
     gui.Application.instance.initialize()
     _LiveWindow(key, frame_ids, q, tq, ready, paused, step)
     ready.set()
@@ -117,8 +117,8 @@ class _LiveWindow:
 
     def __init__(self, key, frame_ids, q, tq, ready, paused, step):
         import open3d as o3d
-        import open3d.visualization.gui as gui
-        import open3d.visualization.rendering as rendering
+        import open3d.visualization.gui as gui  # pyright: ignore[reportMissingImports]
+        import open3d.visualization.rendering as rendering  # pyright: ignore[reportMissingImports]
         import viewer as V                                  # benchmarks/viewer.py, used read-only
         self.o3d, self.gui, self.V = o3d, gui, V
         self.q, self.tq, self.ready, self.paused, self.step = q, tq, ready, paused, step
@@ -487,13 +487,14 @@ def stage_bars(V, run, fid, w_px, h_px, dpi):
     y = np.arange(len(V.STAGES))
     ax.barh(y, vals, height=0.66, color=V.HUES[:len(vals)])
     med = [np.median([v for f in run.ms.values() for v in f.get(s, [])] or [0]) for s in V.STAGES]
-    ax.scatter(med, y, marker='|', s=260, color=V.INK, linewidths=1.6, zorder=3)
+    from matplotlib.markers import MarkerStyle
+    ax.scatter(med, y, marker=MarkerStyle('|'), s=260, color=V.INK, linewidths=1.6, zorder=3)
     for i, v in enumerate(vals):
         ax.text(max(v, med[i]), i, f' {v:.1f} ({100 * v / e2e:.0f}%)' if e2e else '', va='center',
                 color=V.INK, fontsize=9)
     ax.set_yticks(y, V.STAGES, fontsize=10, color=V.INK)
     ax.invert_yaxis()
-    ax.set_xlim(0, max(max(vals), max(med), 1e-3) * 1.6)
+    ax.set_xlim(0, float(max(max(vals), max(med), 1e-3)) * 1.6)
     ax.tick_params(axis='x', labelsize=9)
     ax.set_title(f'Per stage, e2e {e2e:.1f} ms', loc='left', color=V.INK, fontsize=10)
     ax.set_xlabel('ms (% of e2e)   | = run median', color=V.INK2, fontsize=9)

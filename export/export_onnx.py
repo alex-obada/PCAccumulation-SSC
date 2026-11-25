@@ -43,6 +43,7 @@ Usage:
     python export/export_onnx.py --only backbone stpn --no-verify
 """
 import argparse, copy, os, sys, time
+from typing import Any
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -102,38 +103,48 @@ class Backbone(nn.Module):
         return bev_feats, fb_seg, geo
 
 
-def _logsumexp(x, dim):
-    # max-subtracted form: identical math to torch.logsumexp, but it doesn't export to ONNX
-    # ReduceLogSumExp, which TensorRT evaluates as log(sum(exp(x))) and can overflow / underflow.
-    m = torch.max(x, dim=dim, keepdim=True)[0]
-    return m + torch.log(torch.sum(torch.exp(x - m), dim=dim, keepdim=True))
+def _logsumexp2(x, extra, dim):
+    """logsumexp over cat((x, extra), dim) without the concat (extra has size 1 along dim).
+    Max-subtracted on purpose: torch.logsumexp exports to ONNX ReduceLogSumExp, which TensorRT
+    evaluates as log(sum(exp(x))) and can overflow / underflow."""
+    m = torch.maximum(torch.max(x, dim=dim, keepdim=True)[0], extra)
+    return m + torch.log(torch.sum(torch.exp(x - m), dim=dim, keepdim=True) + torch.exp(extra - m))
 
 
 class EgoOT(nn.Module):
     """Same math as EgoMotionHead.pairwise_ego_motion_estimation after sampling, batched over 4 pairs."""
     def __init__(self, head):
         super().__init__()
-        self.alpha, self.beta = head.alpha, head.beta
-        self.softplus = nn.Softplus()
+        # learned scalars, folded into [1, 1, 1] constants: TensorRT 10.3 (Myelin) fails to build a
+        # [4, 1024, 1024] tensor minus a 0-d scalar computed in the graph (softplus(alpha))
+        with torch.no_grad():
+            self.register_buffer('offset', F.softplus(head.alpha.detach().float()).reshape(1, 1, 1).clone())
+            self.register_buffer('scale', (torch.exp(head.beta.detach().float()) + 0.02).reshape(1, 1, 1).clone())
         self.n_iters = head.sinkhorn_iter
 
     def sinkhorn(self, log_alpha):
-        la = F.pad(log_alpha, (0, 1, 0, 1))          # slack row + column of zeros
+        # Same as padding log_alpha with a zero slack row + column and alternately normalizing the
+        # non-slack rows / columns, but with the slack kept as separate vectors: c [B, N, 1] (slack
+        # column) and r [B, 1, M] (slack row). The corner is never normalized and stays 0. No
+        # Pad / Slice / Concat on the [B, N+1, M+1] matrix: TensorRT 10.3 can't build that chain.
+        a = log_alpha
+        c = torch.zeros_like(a[:, :, :1])
+        r = torch.zeros_like(a[:, :1, :])
         for _ in range(self.n_iters):
-            rows = la[:, :-1, :]                       # don't normalize the slack row
-            la = torch.cat((rows - _logsumexp(rows, 2), la[:, -1:, :]), dim=1)
-            cols = la[:, :, :-1]                       # don't normalize the slack column
-            la = torch.cat((cols - _logsumexp(cols, 1), la[:, :, -1:]), dim=2)
-        return la[:, :-1, :-1]
+            lse = _logsumexp2(a, c, 2)                 # rows i < N, over j = 0..M (with the slack)
+            a, c = a - lse, c - lse
+            lse = _logsumexp2(a, r, 1)                 # columns j < M, over i = 0..N (with the slack)
+            a, r = a - lse, r - lse
+        return a
 
     def forward(self, feats_s, feats_t, coor_s, coor_t, max_dist):
         support = (square_distance(coor_s, coor_t, normalised=False) < (max_dist * max_dist)[:, None, None]).float()
         feat_dist = square_distance(feats_s, feats_t, normalised=True)
-        affinity = -(feat_dist - self.softplus(self.alpha)) / (torch.exp(self.beta) + 0.02)
+        affinity = -(feat_dist - self.offset) / self.scale
         perm = torch.exp(self.sinkhorn(affinity)) * support
-        weights = torch.sum(perm, dim=2, keepdim=True)
-        weighted_t = perm @ coor_t / (weights + EPS_WEIGHTS)
-        return weighted_t, weights[..., 0]
+        weights = torch.sum(perm, dim=2)
+        weighted_t = perm @ coor_t / (weights.unsqueeze(2) + EPS_WEIGHTS)
+        return weighted_t, weights
 
 
 class StpnExport(nn.Module):
@@ -183,7 +194,7 @@ def load_model(cfg_path, ckpt):
 
 def run_and_capture(model, batch):
     """One original forward pass, recording the inputs/outputs of every exported part."""
-    cap = {'ego': []}
+    cap: dict[str, Any] = {'ego': []}
     hooks = []
 
     def hook(name, keep_inputs=True):
@@ -386,8 +397,8 @@ def verify(model, ex, specs, paths, rep):
         o_out, (oa, ob, oc) = pfn_chain(lambda x: ort_run(sa, x)[0], lambda x: ort_run(sb, x)[0],
                                         lambda x: ort_run(sc, x)[0], feats, p2v)
         with torch.no_grad():
-            cpu = [copy.deepcopy(m).cpu() for m in (PfnA(pfn), PfnB(pfn), PfnC(pfn))]
-            w_out, _ = pfn_chain(*cpu, feats, p2v)
+            ca, cb, cc = (copy.deepcopy(m).cpu() for m in (PfnA(pfn), PfnB(pfn), PfnC(pfn)))
+            w_out, _ = pfn_chain(ca, cb, cc, feats, p2v)
         rep.tensor('pfn', 'onnxruntime chain vs wrapper chain', o_out, w_out)
         rep.tensor('pfn', 'onnxruntime chain vs PillarFeatureNet', o_out, p['ref'], tol=1e-4)
         for n, t in zip(['pfn_a', 'pfn_b', 'pfn_c'], [oa, ob, oc]):
@@ -472,7 +483,8 @@ def main():
     print(f'\n== export (opset {args.opset}) -> {args.out_dir} ==')
     for name in (args.only or ENGINES):
         path = os.path.join(args.out_dir, f'{name}.onnx')
-        size, ops = export_one(path, *specs[name], args.opset)
+        wrapper, ex_args, in_names, out_names, dyn = specs[name]
+        size, ops = export_one(path, wrapper, ex_args, in_names, out_names, dyn, args.opset)
         paths[name] = path
         print(f'  {name:<9} {size / 1e6:7.2f} MB  ops: {" ".join(ops)}')
 

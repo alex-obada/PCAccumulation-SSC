@@ -48,6 +48,7 @@ def main():
 
     print('\nGPU stack')
     import torch
+    import torch.version
 
     def cuda():
         assert torch.cuda.is_available(), 'torch.cuda.is_available() is False'
@@ -99,12 +100,13 @@ def main():
 
     def onnx_ok():
         import onnx, onnxruntime
-        return f'onnx {onnx.__version__}, onnxruntime {onnxruntime.__version__}'
+        return f'onnx {onnx.__version__}, onnxruntime {onnxruntime.__version__}'  # pyright: ignore[reportPrivateImportUsage]
     check('onnx / onnxruntime', onnx_ok, required=False)
 
     def viewers():
-        import open3d, matplotlib
-        return f'open3d {open3d.__version__}, matplotlib {matplotlib.__version__}'
+        import open3d, matplotlib  # noqa: F401  (import check)
+        from importlib.metadata import version
+        return f'open3d {open3d.__version__}, matplotlib {version("matplotlib")}'
     check('open3d / matplotlib', viewers, required=False)
 
     print('\nModel')

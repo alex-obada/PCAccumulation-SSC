@@ -33,11 +33,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import torch
+import torch.version
 
 from common.reference import (build_config, load_model, read_frame_list, load_frame, frame_id,
                               make_preprocessor, preprocess_mask, crop_and_remove_ground,
                               voxelize_and_collate, to_device)
-from binio import write_bin, read_bin
+from common.binio import write_bin, read_bin
+from live_view import LiveViewClient, frame_message   # open3d is imported only in the window process
 
 E2E_STAGES = ['preprocess', 'voxelize', 'h2d', 'pillar_enc', 'backbone', 'ego_motion', 'motion_seg', 'cluster']
 CSV_FIELDS = ['variant', 'device', 'precision', 'frame', 'pass', 'stage', 'ms', 'n_points', 'n_pillars', 'n_fg_points']
@@ -199,7 +201,6 @@ def main():
     rows, cmp, trans_err = [], [], []
     live = None
     if args.view:
-        from live_view import LiveViewClient, frame_message
         live = LiveViewClient((args.variant, precision, dev), [frame_id(r) for r in frames], args.view_pause)
     t_bench = time.time()
     for p in range(args.passes):

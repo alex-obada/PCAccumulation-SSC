@@ -114,12 +114,12 @@ def voxelize_and_collate(ds, c):
     return collate_fn([data])
 
 
-def to_device(batch):
+def to_device(batch) -> dict:
     return {k: (v.cuda(non_blocking=True) if torch.is_tensor(v) else
                 [e.cuda() for e in v] if isinstance(v, list) and v and torch.is_tensor(v[0]) else v)
             for k, v in batch.items()}
 
 
-def prepare_batch(ds, f):
+def prepare_batch(ds, f) -> dict:
     """Raw frame -> model input on the GPU (all preprocessing steps, untimed)."""
     return to_device(voxelize_and_collate(ds, crop_and_remove_ground(ds, f)))

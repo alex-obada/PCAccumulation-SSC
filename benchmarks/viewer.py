@@ -8,7 +8,7 @@ all frames with the current frame marked).
 It only reads files, so any implementation that writes the same formats can be viewed and
 compared side by side (Python V0, the C++/CUDA variants V1..V5, laptop or Jetson):
 
-  outputs dir   <dir>/<seq>_<frame>/ with binio .bin files (format in benchmarks/binio.py)
+  outputs dir   <dir>/<seq>_<frame>/ with binio .bin files (format in common/binio.py)
                   points.bin       float32 [N, 3]   input points after crop + ground removal
                   mos_label.bin    int32   [N]      0 = static, 1 = moving
                   inst_label.bin   int32   [N]      0 = no object, 1..K = object ID
@@ -35,13 +35,14 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import open3d as o3d
-import open3d.visualization.gui as gui
-import open3d.visualization.rendering as rendering
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from binio import read_bin  # noqa: E402
+import open3d.visualization.gui as gui  # pyright: ignore[reportMissingImports]  (compiled module, no stubs)
+import open3d.visualization.rendering as rendering  # pyright: ignore[reportMissingImports]
+from matplotlib.patches import Rectangle
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from common.binio import read_bin  # noqa: E402
 STAGES = ['preprocess', 'voxelize', 'h2d', 'pillar_enc', 'backbone', 'ego_motion', 'motion_seg', 'cluster']
 
 # categorical palette (dark-surface steps), fixed order: one hue per stage / per run / per object
@@ -76,13 +77,14 @@ class OutputsRun:
         d = os.path.join(self.path, frame)
         if not os.path.isfile(os.path.join(d, 'points.bin')):
             return None
-        out = {'points': read_bin(os.path.join(d, 'points.bin'))[:, :3]}
+        out: dict[str, np.ndarray | None] = {'points': read_bin(os.path.join(d, 'points.bin'))[:, :3]}
         for name in ('mos_label', 'inst_label', 'poses', 'time_indice'):
             p = os.path.join(d, name + '.bin')
             out[name] = read_bin(p) if os.path.isfile(p) else None
         for name in ('mos_label', 'inst_label', 'time_indice'):         # labels may be stored as float
-            if out[name] is not None:
-                out[name] = np.rint(out[name]).astype(np.int64).reshape(-1)
+            v = out[name]
+            if v is not None:
+                out[name] = np.rint(v).astype(np.int64).reshape(-1)
         if len(self._cache) > 8:
             self._cache.pop(next(iter(self._cache)))
         self._cache[frame] = out
@@ -195,7 +197,7 @@ def stage_chart(runs, frame, width_px):
     xmax = max((r.stage_ms(frame, 'e2e') or 0) for r in rows)
     ax.set_xlim(0, xmax * 1.22 if xmax else 1)
     ax.set_xlabel('ms (median over passes)', color=INK2, fontsize=8)
-    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in HUES]
+    handles = [Rectangle((0, 0), 1, 1, color=c) for c in HUES]
     ax.legend(handles, STAGES, ncol=4, fontsize=7, frameon=False, labelcolor=INK2,
               loc='lower left', bbox_to_anchor=(0, 1.0), handlelength=1.0, columnspacing=0.8)
     fig.tight_layout(pad=0.4)
@@ -493,8 +495,8 @@ class Viewer:
 
         if charts:
             px = max(self.panel_px - 2 * int(self.win.theme.font_size), 200)
-            self.stage_img.update_image(o3d.geometry.Image(stage_chart(self.timing, frame, px)))
-            self.e2e_img.update_image(o3d.geometry.Image(e2e_chart(self.timing, self.frames, frame, px)))
+            self.stage_img.update_image(o3d.geometry.Image(stage_chart(self.timing, frame, px)))  # pyright: ignore
+            self.e2e_img.update_image(o3d.geometry.Image(e2e_chart(self.timing, self.frames, frame, px)))  # pyright: ignore
         self.win.set_needs_layout()
         self.win.post_redraw()
 
