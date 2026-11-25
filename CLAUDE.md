@@ -2,8 +2,7 @@
 
 Fork of the ECCV 2022 code "Dynamic 3D Scene Analysis by Point Cloud Accumulation"
 (upstream: https://github.com/prs-eth/PCAccumulation), updated to run on modern GPUs.
-University project (course *Structura Sistemelor de Calcul*): hardware-accelerate the network
-(MotionNet) and deploy it on an **NVIDIA Jetson Orin Nano**.
+Goal: hardware-accelerate the network (MotionNet) and deploy it on an **NVIDIA Jetson Orin Nano**.
 
 Planning documents (Romanian): `docs/Roadmap.md` (weekly plan and deliverables). This file contains 
 all the details of the plan in English; the plan remains the source of truth if they ever disagree.
@@ -327,6 +326,14 @@ optimization, so the contribution of each one can be shown exactly.
 
 - Laptop with an RTX 4060 Laptop GPU (8 GB, sm_89), alongside an AMD integrated GPU (hybrid
   graphics). Ubuntu, NVIDIA driver 595 (CUDA 13.2).
+- TensorRT 10.3.0.26 **cuda-12.5** tar (public URL, no login:
+  `developer.download.nvidia.com/compute/machine-learning/tensorrt/10.3.0/tars/`) extracted to
+  `~/TensorRT-10.3` (2026-11-25). Works with CUDA 12.4 (minor-version compatibility). glibc 2.43
+  refuses to load `libnvinfer_builder_resource*.so.10.3.0` (executable-stack flag, "cannot enable
+  executable stack"): the `PT_GNU_STACK` flag was cleared RWE→RW in both (`.orig` backups next to
+  them); redo this on a reinstall. `trtexec` is in `~/TensorRT-10.3/bin` (needs
+  `LD_LIBRARY_PATH=~/TensorRT-10.3/lib`). `backbone.onnx` builds (FP32, 26 ms); `ego_ot.onnx` fails
+  in TRT 10.3 ("Could not find any implementation for node {ForeignNode[/Transpose_1.../Gather]}").
 - Toolchain: system nvcc 12.4 at `/usr/bin/nvcc` (`CUDA_HOME=/usr`). The default gcc is 15, too new
   for nvcc 12.4, so builds use **gcc-13** (also as the CUDA host compiler for the C++ project).
 - `sudo` doesn't work from Claude's shell (no terminal for the password). Ask the user to run sudo
@@ -366,7 +373,7 @@ optimization, so the contribution of each one can be shown exactly.
   per-stage syncs. Benchmark focus is speed; power and memory are not measured.
 - Regression workflow: `--deterministic --passes 1 --save-outputs benchmarks/results/V0_outputs`
   once on the original model, then `--deterministic --passes 1 --compare <dir>` after each change.
-  Per-frame `.bin` files (format in `benchmarks/binio.py`: int32 dtype code, ndim, dims, data):
+  Per-frame `.bin` files (format in `common/binio.py`: int32 dtype code, ndim, dims, data):
   `points`, `poses [5,4,4]`, `mos_label [N]`, `inst_label [N]`, `time_indice [N]` (int32 sweep 0..4).
   The C++ program must write the same per-frame files (dir `<seq>_<frame>`).
 - `python benchmarks/viewer.py`: Open3D window, per frame: segmented point cloud (static/moving,
@@ -415,6 +422,12 @@ optimization, so the contribution of each one can be shown exactly.
   (int compare for x >= 0, reversed unsigned compare for x < 0), not the plain bitwise trick.
 - `torch.logsumexp` exports as `ReduceLogSumExp`, which TensorRT evaluates without max subtraction;
   `ego_ot` uses an explicit max-subtracted form instead.
+- **TensorRT 10.3 can't build a big tensor minus a 0-d scalar computed in the graph** (Myelin:
+  "Could not find any implementation for node {ForeignNode[...]}", found by bisecting `ego_ot` with
+  `onnx.utils.extract_model` + trtexec). `ego_ot` folds `softplus(alpha)` and `exp(beta) + 0.02` into
+  `[1, 1, 1]` constants at export. Its Sinkhorn also keeps the slack row / column as separate vectors
+  (no Pad / Slice / Concat on the 1025 x 1025 matrix; same math). Watch for the same pattern in
+  future exports.
 
 ## ONNX export (`export/`)
 
@@ -430,9 +443,49 @@ optimization, so the contribution of each one can be shown exactly.
 - Real I/O shapes differ slightly from the table in section 5: `pfn_a` is `[N, 9] -> [N, 32]`,
   `pfn_b`/`pfn_c` are `[N, 64] -> [N, 32]` (input = concat of the net and its pillar max); `backbone`
   input is `[5, 32, 288, 288]` and `geo_feats` has 64 channels.
-- Verified results (3 frames): wrapper vs original exact (0) except `ego_ot` (~1e-7 rel, from the
-  logsumexp rewrite); onnxruntime vs original <= 6e-5 rel; fb/mos argmax 100 % identical; poses
+- Verified results (3 frames): wrapper vs original exact (0) except `ego_ot` (~2e-7 rel, from the
+  logsumexp / slack rewrite and the folded constants); onnxruntime vs original <= 6e-5 rel; fb/mos argmax 100 % identical; poses
   within 0.003 cm.
+
+## Reference data for C++ (`export/dump_reference.py`)
+
+- `bash export/dump_reference.sh [--ref i ...] [--only-ref]` writes `pcacc_cpp/data/<seq>_<frame>/`
+  (`raw_points`, `raw_time`, `poses_gt`) for the selected frames, plus `ref/` (original model's
+  intermediates: `points`, `coordinates` (z,y,x,t), `p2v`, `pillar_mean`, `pfn_{a,b,c}_{in,out}`,
+  `pillar_feats`, `bev`, `fb_seg`, `poses_est`, final labels) for the `--ref` frames (default 0 1 2).
+  Writes `frames.txt`. Run with deterministic cuDNN, no TF32. `pcacc_cpp/data/` is git-ignored.
+- Collate pads `coordinates` / `time_indice` with a float batch column: cast to int32 before writing.
+
+## C++ project status (`pcacc_cpp/`, see its README)
+
+- Done and tested (`test_modules`, 9 ctest cases, frames 0 1 2 100 200): `preprocess.cu`,
+  `voxelize.cu` (radix sort by key `(t*Ny+y)*Nx+x`, pillars numbered in key order), `pillar_ops.cu`
+  (pillar mean, 9 PFN features, per-pillar max + concat, BEV / occupancy / mean-map scatter),
+  `trt_engine.cpp`, `networks.cpp` (`PillarEncoder` = pfn_a/b/c + max/concat kernels, `Backbone`),
+  `pointcloud_io.cpp`, `pipeline.cpp` (h2d .. backbone) and `main.cpp` (`--precision fp32|tf32|fp16`).
+- TensorRT tests (strict fp32): pfn engines <= 1.4e-6 abs, pillar features <= 3.6e-7, backbone
+  `fb_seg` ~1e-4 abs with 100 % argmax agreement. All 6 `.onnx` build in TRT 10.3 (trtexec, fp32:
+  pfn ~3.5 ms each at 350k points, backbone 26 ms, ego_ot 1.3 ms, stpn 19 ms at 80k points).
+- Engine cache: `models/<name>.<fp32|tf32|fp16>.sm<XY>.trt<A.B.C>.engine`, rebuilt if missing,
+  unloadable or older than the `.onnx`. `Precision::FP32` clears TensorRT's default TF32 flag. pfn
+  profiles are fixed (1 .. `kMaxPoints` = 800k, opt 350k) so the cache fits every frame set.
+- Per-pillar reductions loop over each pillar's points via `start[]` / `sorted_idx[]` (no atomics,
+  deterministic, sign-safe), so the sign-aware `atomicMax` noted above is not needed.
+- `Pillars.coords` is `int4 (z, y, x, t)` = (`.x`, `.y`, `.z`, `.w`): x is `.z`, t is `.w`.
+- TensorRT stays optional in CMake (`PCACC_WITH_TENSORRT`; without it only the CUDA stages build).
+  Its headers are `SYSTEM` includes (otherwise -Wextra floods the build with NVIDIA warnings).
+- Next: `ego_motion.cu` (background pillar selection + sampling) + `ego_ot` engine + `kabsch.cpp`.
+  The reference has no sampled indices yet (`dump_reference.py` must save them for exact tests).
+- Build with the presets in `pcacc_cpp/CMakePresets.json` (system cmake + `libeigen3-dev`):
+  `cmake --preset laptop && cmake --build --preset laptop && ctest --preset laptop` (laptop preset =
+  sm_89, gcc-13, `TENSORRT_ROOT=$HOME/TensorRT-10.3`); on the Jetson `--preset jetson` (sm_87).
+  The `compiler-bindir` nvcc warning comes from `NVCC_PREPEND_FLAGS` in the shell and is harmless.
+- VS Code (`.vscode/settings.json`): venv interpreter, Pylance `extraPaths` (repo root, `benchmarks/`,
+  `export/`, which the scripts add to `sys.path` at runtime), CMake Tools on `pcacc_cpp/` with presets,
+  cpptools IntelliSense from `compile_commands.json` (CMakeLists turns off nvcc's include `.rsp` files,
+  which cpptools can't read; `.vscode/c_cpp_properties.json` is the fallback before a preset is picked),
+  STM32 clangd extension disabled in this workspace. Pylance bundles matplotlib/sklearn stubs the
+  pyright CLI lacks: check with its `dist/bundled/stubs` as `stubPath`. Our Python files are clean under pyright `standard` mode; keep them that way.
 
 ## Code changes made vs. upstream
 
@@ -441,7 +494,7 @@ optimization, so the contribution of each one can be shown exactly.
   → builtins (removed in numpy 1.24+).
 - `models/motionnet.py`: optional `self.timer` stage hooks (`_mark`), no effect on outputs.
 - Added: `setup_env.sh`, `INSTALL.md`, `RUNNING.md`, `check_env.py`, `common/reference.py`, `benchmarks/`
-  (`bench_v0.py`, `summarize.py`, `binio.py`, `viewer.py`, `live_view.py`), `export/` (`export_onnx.py`, `export_models.sh`),
+  (`bench_v0.py`, `summarize.py`, `viewer.py`, `live_view.py`), `common/binio.py`, `export/` (`export_onnx.py`, `export_models.sh`, `dump_reference.py`, `dump_reference.sh`), `pcacc_cpp/`,
   and `.gitignore` entries.
 - Removed `synthetic_benchmark.py`: the selected real frames replace the synthetic scenes.
 

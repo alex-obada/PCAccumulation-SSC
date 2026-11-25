@@ -1,0 +1,32 @@
+{
+  // ---- Python: reference model, benchmarks, export utility
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv_pcaccumulation/bin/python",
+  "python.terminal.activateEnvironment": true,
+  // the scripts add these folders to sys.path at runtime; Pylance needs them spelled out
+  "python.analysis.extraPaths": ["${workspaceFolder}", "${workspaceFolder}/benchmarks", "${workspaceFolder}/export"],
+  "python.analysis.exclude": [
+    "**/node_modules", "**/__pycache__", "**/.*",
+    "venv_*", "data", "pcacc_cpp/build", "pcacc_cpp/data", "snapshot", "results", "checkpoints"
+  ],
+
+  // ---- C++ / CUDA: pcacc_cpp, IntelliSense from CMake (compile_commands.json)
+  "cmake.sourceDirectory": "${workspaceFolder}/pcacc_cpp",
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "cmake.environment": {},
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/pcacc_cpp/build/compile_commands.json",
+  "C_Cpp.default.cppStandard": "c++17",
+  // one C++ engine only: the STM32 clangd extension would run alongside cpptools here
+  "stm32cube-ide-clangd.enable": false,
+  "files.associations": { "*.cu": "cuda-cpp", "*.cuh": "cuda-cpp" },
+
+  // ---- keep the big folders out of search / file watching
+  "files.watcherExclude": {
+    "**/venv_*/**": true, "**/.deps/**": true, "**/data/**": true,
+    "**/pcacc_cpp/build/**": true, "**/checkpoints/**": true, "**/snapshot/**": true
+  },
+  "search.exclude": {
+    "**/venv_*": true, "**/.deps": true, "**/data": true, "**/pcacc_cpp/build": true, "**/*.onnx": true
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "laptop",
+      "displayName": "Laptop (RTX 4060, sm_89)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "89",
+        "CMAKE_CXX_COMPILER": "g++-13",
+        "CMAKE_CUDA_HOST_COMPILER": "g++-13",
+        "CMAKE_CUDA_COMPILER": "/usr/bin/nvcc",
+        "TENSORRT_ROOT": "$env{HOME}/TensorRT-10.3"
+      }
+    },
+    {
+      "name": "jetson",
+      "displayName": "Jetson Orin Nano (sm_87)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "87"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "laptop", "configurePreset": "laptop", "jobs": 4 },
+    { "name": "jetson", "configurePreset": "jetson", "jobs": 4 }
+  ],
+  "testPresets": [
+    { "name": "laptop", "configurePreset": "laptop", "output": { "outputOnFailure": true } },
+    { "name": "jetson", "configurePreset": "jetson", "output": { "outputOnFailure": true } }
+  ]
+}

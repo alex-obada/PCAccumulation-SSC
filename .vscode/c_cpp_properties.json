@@ -1,0 +1,22 @@
+{
+  // IntelliSense for pcacc_cpp. CMake Tools (preset "laptop") provides per-file flags; if no preset is
+  // selected yet, cpptools falls back to compile_commands.json, then to the paths below (headers).
+  "configurations": [
+    {
+      "name": "pcacc (laptop, sm_89)",
+      "configurationProvider": "ms-vscode.cmake-tools",
+      "compileCommands": "${workspaceFolder}/pcacc_cpp/build/compile_commands.json",
+      "compilerPath": "/usr/bin/g++-13",
+      "includePath": [
+        "${workspaceFolder}/pcacc_cpp/include",
+        "/usr/include/eigen3",
+        "${env:HOME}/TensorRT-10.3/include"
+      ],
+      "defines": ["PCACC_WITH_TENSORRT=1"],
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}
